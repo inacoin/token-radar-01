@@ -1,4 +1,4 @@
-// Token Radar dashboard (radar-2). Reads window.RADAR (written beside
+// Token Radar dashboard (radar-4). Reads window.RADAR (written beside
 // dashboard/ by main.ts) and renders the ranked board, filters, a live-token
 // view, a per-protocol detail drawer and the calibrated model. No network:
 // every byte shown is in data.js. Farm steps come straight from the rows,
@@ -29,13 +29,13 @@
     var cm = Math.min(model.chain_cap, 1 + Math.min(Math.max((row.chains || []).length - 1, 0), 5) * model.chain_step);
     var mom = row.momentum_multiplier === undefined ? 1 : row.momentum_multiplier;
     var dom = row.dominance_multiplier === undefined ? 1 : row.dominance_multiplier;
-    return Math.max(1, Math.round(row.tvl_usd * row.category_multiple * gm * mm * cm * mom * dom));
+    var conf = row.confidence_multiplier === undefined ? 1 : row.confidence_multiplier;
+    return Math.max(1, Math.round(row.tvl_usd * row.category_multiple * gm * mm * cm * mom * dom * conf));
   }
-  function fmtValuePerUsd(n) {
-    if (n === null || n === undefined || !isFinite(n)) return 'n/a';
-    if (n >= 1e6) return '$' + (n / 1e6).toFixed(1) + 'M';
-    if (n >= 1e3) return '$' + Math.round(n / 1e3) + 'K';
-    return '$' + Math.round(n);
+  function confClass(c) {
+    if (c === 'strong') return 'conf strong';
+    if (c === 'fair') return 'conf fair';
+    return 'conf thin';
   }
   function sigClass(s) {
     if (s === 'HOT') return 'sig hot';
@@ -104,7 +104,6 @@
       else if (k === 'growth') { av = a.change_7d === null ? -Infinity : a.change_7d; bv = b.change_7d === null ? -Infinity : b.change_7d; }
       else if (k === 'age') { av = a.age_days === null ? Infinity : a.age_days; bv = b.age_days === null ? Infinity : b.age_days; }
       else if (k === 'multiple') { av = a.category_multiple; bv = b.category_multiple; }
-      else if (k === 'value') { av = a.value_per_usd_farmed; bv = b.value_per_usd_farmed; }
       else { av = a.implied_value_usd; bv = b.implied_value_usd; }
       if (av < bv) return -state.dir;
       if (av > bv) return state.dir;
@@ -119,8 +118,8 @@
   function lede() {
     return el('section', { class: 'lede' },
       el('div', null,
-        el('h1', { text: DATA.watchlist_size + ' watchlist protocols, ranked by implied value' }),
-        el('p', null, 'The watchlist is the floor: every protocol with at least $', el('b', { text: Math.round(DATA.floor_usd / 1e6) + 'M' }), ' of TVL and no token on record. The early radar adds ', el('b', { text: String(DATA.early_size) }), ' pre-token protocols the watchlist does not name, after wrapped, staked and bridged products are removed. Implied value is a model, not a promise — and "no token" means no token on record, never proof there is none.')),
+        el('h1', { text: DATA.watchlist_size + ' watchlist protocols, ranked by evidence-weighted implied value' }),
+        el('p', null, 'The watchlist is the floor: every protocol with at least $', el('b', { text: Math.round(DATA.floor_usd / 1e6) + 'M' }), ' of TVL and no token on record. The early radar adds ', el('b', { text: String(DATA.early_size) }), ' pre-token protocols the watchlist does not name. Implied value is evidence-weighted: a valuation priced on a guess is discounted before it ranks — and "no token" means no token on record, never proof there is none.')),
       el('div', { class: 'facts' },
         el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })),
         el('div', { class: 'fact' }, el('span', { text: 'Pre-token rows scored' }), el('b', { text: String(DATA.board_size) })),
@@ -169,7 +168,7 @@
       chains.map(function (c) { return el('option', { value: c, text: c, selected: c === state.chain ? 'selected' : null }); }));
     chainSel.addEventListener('change', function () { state.chain = chainSel.value; writeHash(); render(); });
     var sortSel = el('select', { id: 'sort', 'aria-label': 'Sort by' },
-      [['implied', 'Sort: implied value'], ['tvl', 'Sort: TVL'], ['growth', 'Sort: 7-day growth'], ['age', 'Sort: age'], ['multiple', 'Sort: category multiple'], ['value', 'Sort: value per $1 farmed'], ['name', 'Sort: name']].map(function (o) { return el('option', { value: o[0], text: o[1], selected: o[0] === state.sort ? 'selected' : null }); }));
+      [['implied', 'Sort: implied value'], ['tvl', 'Sort: TVL'], ['growth', 'Sort: 7-day growth'], ['age', 'Sort: age'], ['multiple', 'Sort: category multiple'], ['name', 'Sort: name']].map(function (o) { return el('option', { value: o[0], text: o[1], selected: o[0] === state.sort ? 'selected' : null }); }));
     sortSel.addEventListener('change', function () { state.sort = sortSel.value; state.dir = -1; render(); });
     var wlBox = el('input', { type: 'checkbox', id: 'wl', checked: state.wl ? 'checked' : null });
     wlBox.addEventListener('change', function () { state.wl = wlBox.checked; writeHash(); render(); });
@@ -219,7 +218,7 @@
         el('td', null, el('div', { class: 'implied' },
           el('div', { class: 'bar', 'aria-hidden': 'true' }, el('i', { class: r.rank <= 3 ? 'hot' : '', style: 'width:' + Math.max(3, Math.round((r.implied_value_usd / max) * 100)) + '%' })),
           el('span', { class: 'num', text: fmtUsd(r.implied_value_usd) }))),
-        el('td', { class: 'num', text: fmtValuePerUsd(r.value_per_usd_farmed) }),
+        el('td', null, el('span', { class: confClass(r.confidence || 'thin'), text: r.confidence || 'thin' })),
         el('td', null, el('div', { class: 'sigs' }, sigs.length ? sigs : el('span', { class: 'sub', text: '—' }))),
         el('td', null, el('span', { class: 'status', text: 'no token' })));
       tbody.appendChild(tr);
@@ -230,7 +229,7 @@
         el('thead', null, el('tr', null,
           sortHeader('implied', 'Rank'), sortHeader('name', 'Protocol'), sortHeader('tvl', 'TVL'),
           sortHeader('growth', '7d'), sortHeader('age', 'Age'), sortHeader('multiple', 'Cat. multiple'),
-          sortHeader('implied', 'Implied value'), sortHeader('value', 'Value / $1'), el('th', { scope: 'col', text: 'Signals' }), el('th', { scope: 'col', text: 'Token' }))),
+          sortHeader('implied', 'Implied value'), el('th', { scope: 'col', text: 'Evidence' }), el('th', { scope: 'col', text: 'Signals' }), el('th', { scope: 'col', text: 'Token' }))),
         tbody)));
   }
   function liveTable() {
@@ -260,8 +259,8 @@
       el('h2', { text: 'How implied value is computed' }),
       el('p', { class: 'sub', text: 'One function scores every protocol; no name is special-cased. The category multiple is the median market-cap / TVL of live-token protocols in the same category in this snapshot (at least 3 comparables, shrunk toward the global median ' + DATA.global_multiple + 'x, clamped 0.03–0.80); sparse categories use the global median.' }),
       el('div', { class: 'formula' },
-        'implied = round( tvl_usd x category_multiple x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') x chain_breadth x momentum x dominance )'),
-      el('p', { class: 'sub', text: 'Momentum is growth relative to the median 7d growth of the category\u2019s rankable peers, clamped to \u00B1' + m.momentum_cap + ' points at weight ' + m.momentum_weight + ': a protocol outgrowing its own category is nearer a launch. Dominance is the protocol\u2019s share of its category\u2019s rankable TVL, capped at a ' + (m.dominance_share_cap * 100) + '% share at weight ' + m.dominance_step + ': the category leader is the one a launch would price first. Age is days since DefiLlama first listed the protocol; an unlisted age uses ' + m.unknown_age_days + ' days. Chain breadth is 1 + 0.02 per extra chain, at most 1.10. Wrapped, staked, bridged, versioned and exchange products are excluded from the whole board, and live-token protocols are shown separately with their real market caps.' }),
+        'implied = round( tvl_usd x category_multiple x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') x chain_breadth x momentum x dominance x evidence )'),
+      el('p', { class: 'sub', text: 'Momentum is growth relative to the median 7d growth of the category\u2019s rankable peers, clamped to \u00B1' + m.momentum_cap + ' points at weight ' + m.momentum_weight + ': a protocol outgrowing its own category is nearer a launch. Dominance is the protocol\u2019s share of its category\u2019s rankable TVL, capped at a ' + (m.dominance_share_cap * 100) + '% share at weight ' + m.dominance_step + ': the category leader is the one a launch would price first. Evidence is a haircut on the final value: strong (10+ live comparables) keeps x' + m.confidence_strong.toFixed(2) + ', fair (3–9) keeps x' + m.confidence_fair.toFixed(2) + ', thin (fewer than 3, priced on the global median) keeps x' + m.confidence_thin.toFixed(2) + ' — a valuation built on a guess is discounted before it ranks. Age is days since DefiLlama first listed the protocol; an unlisted age uses ' + m.unknown_age_days + ' days. Chain breadth is 1 + 0.02 per extra chain, at most 1.10. Wrapped, staked, bridged, versioned and exchange products are excluded from the whole board, and live-token protocols are shown separately with their real market caps.' }),
       el('p', { class: 'sub', text: 'Evidence: a category priced from 10 or more live comparables is strong, 3–9 is fair, and a category with fewer than 3 is thin — it is priced on the global median instead. ' + (DATA.category_stats || []).length + ' categories carry a pre-token row; the board\u2019s total implied value is ' + fmtUsd(DATA.total_implied_usd) + '.' }),
       el('div', { class: 'table-wrap' }, el('table', null,
         el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Category' }), el('th', { scope: 'col', text: 'Live comparables' }), el('th', { scope: 'col', text: 'Median mcap / TVL' }), el('th', { scope: 'col', text: 'Multiple used' }), el('th', { scope: 'col', text: 'Evidence' }))),
@@ -293,8 +292,8 @@
         el('div', null, el('span', { text: 'Category share (' + Math.round(row.category_share * 100) + '% of category TVL)' }), el('b', { class: 'num', text: row.dominance_multiplier.toFixed(4) + 'x' })),
         el('div', null, el('span', { text: 'Age with no token on record' }), el('b', { class: 'num', text: fmtAge(row.age_days) + ' → ' + row.maturity_multiplier.toFixed(4) + 'x' })),
         el('div', null, el('span', { text: 'Chain breadth (' + (row.chains || []).length + ' chains)' }), el('b', { class: 'num', text: row.chain_multiplier.toFixed(4) + 'x' })),
-        el('div', { class: 'total' }, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) })),
-        el('div', null, el('span', { text: 'Value per $1 farmed' }), el('b', { class: 'num', text: fmtValuePerUsd(row.value_per_usd_farmed) }))),
+        el('div', null, el('span', { text: 'Evidence adjustment (' + (row.confidence || 'thin') + ' evidence, ' + row.comparables + ' comparables)' }), el('b', { class: 'num', text: (row.confidence_multiplier === undefined ? 1 : row.confidence_multiplier).toFixed(2) + 'x' })),
+        el('div', { class: 'total' }, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))),
       el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the page recomputes this row as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' This is an estimate of what a launch could be worth if the record stayed as it is — not a price, and not a prediction that a token is issued.' })));
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm plan — 6 steps' }),

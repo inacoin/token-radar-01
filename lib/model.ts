@@ -1,11 +1,11 @@
-// Token Radar — value model (radar-3, category-calibrated).
+// Token Radar — value model (radar-4, category-calibrated, evidence-weighted).
 //
 // The board ranks every protocol in the sealed snapshot that RECORDS NO TOKEN
 // and is not a wrapped / staked / bridged product of a token that already
 // trades. "Records no token" is DefiLlama's record, never proof a protocol
 // has no token: a protocol may still have one its record does not carry.
 //
-// Implied value is computed from the snapshot's own figures only, in six
+// Implied value is computed from the snapshot's own figures only, in seven
 // factors — no protocol name is ever special-cased:
 //
 //   1. Category multiple: the median market-cap / TVL ratio of the
@@ -29,15 +29,24 @@
 //   6. Dominance: share of the category's rankable TVL, capped at a 50%
 //      share, weight 0.2. The protocol that leads its category is the
 //      one a launch would price first.
+//   7. Evidence adjustment: the category multiple is only as good as the
+//      live comparables behind it. A row priced from 10+ comparables
+//      keeps its full value (strong, x1.00); 3-9 comparables keep 90%
+//      (fair, x0.90); a row priced on the global median with fewer than
+//      3 comparables keeps 70% (thin, x0.70). A valuation built on a
+//      guess is discounted, in the open, instead of presented at full
+//      price beside one built on evidence.
 //
 //   implied = round(tvl_usd * category_multiple * growth_mult
 //                   * maturity_mult * chain_mult * momentum_mult
-//                   * dominance_mult), at least $1.
+//                   * dominance_mult * evidence_mult), at least $1.
 //
 // Each row also carries a confidence grade (strong/fair/thin, from how
 // many live comparables price its category), scannable signals (HOT,
-// COOLING, THIN, 1-CHAIN, LONG WAIT, NEW), the implied value per $1 of
-// farm capital, and a one-line verdict built from its own factors.
+// COOLING, THIN, 1-CHAIN, LONG WAIT, NEW), and a one-line verdict built
+// from its own factors. (Radar-3's "implied value per $1 farmed" is gone:
+// implied value divided by a $50-$250 farm ticket is a multi-million
+// dollar figure per dollar that reads as innumerate, not informative.)
 //
 // Exclusions (the house watchlist rule, applied to the WHOLE board, not
 // just the watchlist): category Bridge / Canonical Bridge / Liquid
@@ -87,6 +96,12 @@ export interface ModelConstants {
   momentum_cap: number;
   dominance_step: number;
   dominance_share_cap: number;
+  /** Evidence haircut on the final implied value: strong (10+ comparables). */
+  confidence_strong: number;
+  /** Evidence haircut: fair (3-9 comparables). */
+  confidence_fair: number;
+  /** Evidence haircut: thin (<3 comparables, global median used). */
+  confidence_thin: number;
 }
 
 export const MODEL: ModelConstants = {
@@ -107,9 +122,12 @@ export const MODEL: ModelConstants = {
   momentum_cap: 30,
   dominance_step: 0.2,
   dominance_share_cap: 0.5,
+  confidence_strong: 1.0,
+  confidence_fair: 0.9,
+  confidence_thin: 0.7,
 };
 
-export const MODEL_VERSION = 'radar-3';
+export const MODEL_VERSION = 'radar-4';
 export const LIVE_ROWS = 24;
 
 export interface FarmStep {
@@ -142,6 +160,8 @@ export interface BoardRow {
     chain_multiplier: number;
     momentum_multiplier: number;
     dominance_multiplier: number;
+    /** Evidence haircut applied to the final implied value (1.00 / 0.90 / 0.70). */
+    confidence_multiplier: number;
     age_days: number | null;
   };
   /** Growth of this protocol minus the median 7d growth of its category's rankable peers, in points. */
@@ -152,8 +172,6 @@ export interface BoardRow {
   confidence: 'strong' | 'fair' | 'thin';
   /** Scannable flags: HOT, COOLING, THIN, 1-CHAIN, LONG WAIT, NEW. */
   signals: string[];
-  /** Implied value per $1 of farm capital (see capitalFor): which launch is worth the most per dollar farmed. */
-  value_per_usd_farmed: number;
   /** One plain-language verdict built from this row's own factors. */
   verdict: string;
   farm_steps: string[];
@@ -177,13 +195,14 @@ export interface RadarRow {
   chain_multiplier: number;
   momentum_multiplier: number;
   dominance_multiplier: number;
+  /** Evidence haircut applied to the final implied value (1.00 / 0.90 / 0.70). */
+  confidence_multiplier: number;
   /** Growth of this protocol minus the median 7d growth of its category's rankable peers, in points. */
   relative_growth: number;
   /** Share of the category's rankable TVL, 0..1. */
   category_share: number;
   confidence: 'strong' | 'fair' | 'thin';
   signals: string[];
-  value_per_usd_farmed: number;
   verdict: string;
   farm_steps: string[];
   watchlist: boolean;
@@ -395,6 +414,16 @@ export function confidenceFor(comparables: number): 'strong' | 'fair' | 'thin' {
   return 'thin';
 }
 
+/** Evidence haircut on the final implied value, from the confidence grade. */
+export function confidenceMultiplier(
+  confidence: 'strong' | 'fair' | 'thin',
+  model: ModelConstants = MODEL,
+): number {
+  if (confidence === 'strong') return model.confidence_strong;
+  if (confidence === 'fair') return model.confidence_fair;
+  return model.confidence_thin;
+}
+
 /** Scannable flags for a row, from its own record only. */
 export function signalsFor(
   p: SnapshotProtocol,
@@ -428,6 +457,10 @@ export function verdictFor(args: {
   confidence: 'strong' | 'fair' | 'thin';
 }): string {
   const a = args;
+  // Each strength is a participle or adjective phrase, because the
+  // sentence is "Ranks #N because it is <strength>, and <strength>."
+  // Radar-3 shipped finite verbs here ("because it is leads ...");
+  // radar-4 keeps the grammar straight.
   const strengths: string[] = [];
   if (a.change_7d !== null && a.change_7d >= 10) {
     strengths.push(`growing fast at +${a.change_7d.toFixed(1)}% in 7 days`);
@@ -436,20 +469,20 @@ export function verdictFor(args: {
     strengths.push(`outgrowing its category peers by ${a.relative_growth.toFixed(1)} points`);
   }
   if (a.category_share >= 0.3) {
-    strengths.push(`leads its category with ${(a.category_share * 100).toFixed(0)}% of the category's pre-token TVL`);
+    strengths.push(`leading its category with ${(a.category_share * 100).toFixed(0)}% of the category's pre-token TVL`);
   }
   if (a.age_days !== null && a.age_days >= 730) {
-    strengths.push(`has run ${(a.age_days / 365).toFixed(1)} years with no token on record`);
+    strengths.push(`running ${(a.age_days / 365).toFixed(1)} years with no token on record`);
   }
   if (a.chains.length >= 8) {
     strengths.push(`live on ${a.chains.length} chains`);
   }
   if (strengths.length === 0) {
-    strengths.push(`$${Math.round(a.tvl_usd / 1e6)}M of TVL priced at a ${a.category_multiple.toFixed(2)}x category multiple`);
+    strengths.push(`carrying $${Math.round(a.tvl_usd / 1e6)}M of TVL priced at a ${a.category_multiple.toFixed(2)}x category multiple`);
   }
   const risks: string[] = [];
   if (a.confidence === 'thin') {
-    risks.push(`priced on the global median — only ${a.comparables} live comparables in its category`);
+    risks.push(`priced on the global median — only ${a.comparables} live comparables in its category, so its value is discounted 30%`);
   }
   if (a.change_7d !== null && a.change_7d <= -10) {
     risks.push(`TVL fell ${a.change_7d.toFixed(1)}% in 7 days`);
@@ -500,11 +533,17 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     const catTotal = totals.get(p.category ?? 'Other') ?? p.tvl_usd;
     const share = catTotal > 0 ? p.tvl_usd / catTotal : 0;
     const v = impliedValue(p, snapshot.as_of, multiple, model, peerMedian, share);
-    return { p, multiple, comparables, share, ...v };
+    // Radar-4: the evidence haircut. A row priced on the global median
+    // with no live comparables behind its multiple is discounted 30%
+    // before ranking; the board ranks evidence-weighted value, not a
+    // raw guess presented at full price.
+    const confidence = confidenceFor(comparables);
+    const confMult = confidenceMultiplier(confidence, model);
+    const adjusted = Math.max(1, Math.round(v.implied * confMult));
+    return { p, multiple, comparables, share, confidence, confMult, adjusted, ...v };
   });
-  scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
+  scored.sort((a, b) => b.adjusted - a.adjusted || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
   return scored.map((s, i) => {
-    const confidence = confidenceFor(s.comparables);
     const signals = signalsFor(s.p, s.age, s.comparables);
     const verdict = verdictFor({
       rank: i + 1,
@@ -518,7 +557,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       comparables: s.comparables,
       relative_growth: s.relativeGrowth,
       category_share: s.share,
-      confidence,
+      confidence: s.confidence,
     });
     return {
       rank: i + 1,
@@ -534,7 +573,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       symbol: s.p.symbol,
       token_status: 'pre-token' as const,
       age_days: s.age,
-      implied_value_usd: s.implied,
+      implied_value_usd: s.adjusted,
       model: {
         category_multiple: s.multiple,
         comparables: s.comparables,
@@ -547,13 +586,13 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
         chain_multiplier: s.chainMult,
         momentum_multiplier: s.momentumMult,
         dominance_multiplier: s.dominanceMult,
+        confidence_multiplier: s.confMult,
         age_days: s.age,
       },
-      confidence,
+      confidence: s.confidence,
       signals,
       relative_growth: round4(s.relativeGrowth),
       category_share: round4(s.share),
-      value_per_usd_farmed: Math.round((s.implied / capitalFor(s.p)) * 100) / 100,
       verdict,
       farm_steps: farmSteps(s.p, s.age).map(stepText),
     };
@@ -615,12 +654,31 @@ function actionFor(p: SnapshotProtocol, capital: number, chain: string): string 
  * Derived from the protocol's own record (category, chains, TVL, age),
  * never from a hand-written list of names.
  */
+/** The weekly qualifying action, specific to the protocol's category — a
+ * farm plan that says "do something" every week is a template, not a plan. */
+function weeklyActionFor(p: SnapshotProtocol): string {
+  const c = (p.category ?? '').toLowerCase();
+  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) return 'a supply, a borrow or a repayment';
+  if (c.includes('dex') || c.includes('leveraged farm')) return 'a swap or a liquidity top-up';
+  if (c.includes('yield') || c.includes('curator') || c.includes('allocator') || c.includes('risk')) return 'a deposit or a vault rebalance';
+  if (c.includes('rwa')) return 'a mint or a hold-check on the yield-bearing asset';
+  if (c.includes('prediction')) return 'one small researched market position';
+  if (c.includes('perpetual') || c.includes('derivative')) return 'one small hedged trade';
+  if (c.includes('bridge')) return 'a bridge transfer you actually use';
+  if (c.includes('staking') || c.includes('restak')) return 'a stake top-up or a rewards check';
+  if (c.includes('stable')) return 'a mint or a hold of the stable asset';
+  if (c.includes('insurance')) return 'a cover check or a policy renewal';
+  if (c.includes('payment')) return 'one real payment through the protocol';
+  return 'a deposit, a borrow, a swap or a vote';
+}
+
 export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const chain = chainOf(p);
   const capital = capitalFor(p);
   const hold = holdDaysFor(age);
   const gas = gasGuide(chain);
   const action = actionFor(p, capital, chain);
+  const weekly = weeklyActionFor(p);
   return [
     {
       text: `Use a fresh wallet that holds only the funds you plan to farm, keep its seed phrase offline, and fund it with $${capital} of USDC plus gas on ${chain}.`,
@@ -629,7 +687,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
     },
     { text: action, cost: `$${capital} of capital and ${gas}`, time: '15 minutes to set up' },
     {
-      text: `Do one qualifying action each week on ${chain}, such as a deposit, a borrow, a swap or a vote, and never leave the wallet idle for a whole month.`,
+      text: `Do one qualifying action each week on ${chain} — ${weekly} — and never leave the wallet idle for a whole month.`,
       cost: 'about $2 of gas a week',
       time: '10 minutes a week',
     },
@@ -686,11 +744,11 @@ export function radarRow(row: BoardRow): RadarRow {
     chain_multiplier: row.model.chain_multiplier,
     momentum_multiplier: row.model.momentum_multiplier,
     dominance_multiplier: row.model.dominance_multiplier,
+    confidence_multiplier: row.model.confidence_multiplier,
     relative_growth: row.relative_growth,
     category_share: row.category_share,
     confidence: row.confidence,
     signals: row.signals,
-    value_per_usd_farmed: row.value_per_usd_farmed,
     verdict: row.verdict,
     farm_steps: row.farm_steps,
     watchlist: false,
