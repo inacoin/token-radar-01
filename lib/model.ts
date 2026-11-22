@@ -1,11 +1,11 @@
-// Token Radar — value model (radar-4, category-calibrated, evidence-weighted).
+// Token Radar — value model (radar-2, category-calibrated).
 //
 // The board ranks every protocol in the sealed snapshot that RECORDS NO TOKEN
 // and is not a wrapped / staked / bridged product of a token that already
 // trades. "Records no token" is DefiLlama's record, never proof a protocol
 // has no token: a protocol may still have one its record does not carry.
 //
-// Implied value is computed from the snapshot's own figures only, in seven
+// Implied value is computed from the snapshot's own figures only, in four
 // factors — no protocol name is ever special-cased:
 //
 //   1. Category multiple: the median market-cap / TVL ratio of the
@@ -22,31 +22,9 @@
 //      longer to accumulate users worth rewarding at launch.
 //   4. Chain breadth: 1 + 0.02 * min(chains - 1, 5), at most 1.10.
 //      A protocol live on more chains reaches more farmers.
-//   5. Momentum: growth relative to the median 7d growth of the
-//      category's rankable peers, clamped to +/-30 points, weight 0.3.
-//      A protocol outgrowing its own category is nearer a launch than
-//      one riding the category's drift.
-//   6. Dominance: share of the category's rankable TVL, capped at a 50%
-//      share, weight 0.2. The protocol that leads its category is the
-//      one a launch would price first.
-//   7. Evidence adjustment: the category multiple is only as good as the
-//      live comparables behind it. A row priced from 10+ comparables
-//      keeps its full value (strong, x1.00); 3-9 comparables keep 90%
-//      (fair, x0.90); a row priced on the global median with fewer than
-//      3 comparables keeps 70% (thin, x0.70). A valuation built on a
-//      guess is discounted, in the open, instead of presented at full
-//      price beside one built on evidence.
 //
 //   implied = round(tvl_usd * category_multiple * growth_mult
-//                   * maturity_mult * chain_mult * momentum_mult
-//                   * dominance_mult * evidence_mult), at least $1.
-//
-// Each row also carries a confidence grade (strong/fair/thin, from how
-// many live comparables price its category), scannable signals (HOT,
-// COOLING, THIN, 1-CHAIN, LONG WAIT, NEW), and a one-line verdict built
-// from its own factors. (Radar-3's "implied value per $1 farmed" is gone:
-// implied value divided by a $50-$250 farm ticket is a multi-million
-// dollar figure per dollar that reads as innumerate, not informative.)
+//                   * maturity_mult * chain_mult), at least $1.
 //
 // Exclusions (the house watchlist rule, applied to the WHOLE board, not
 // just the watchlist): category Bridge / Canonical Bridge / Liquid
@@ -92,16 +70,6 @@ export interface ModelConstants {
   multiple_cap: number;
   chain_step: number;
   chain_cap: number;
-  momentum_weight: number;
-  momentum_cap: number;
-  dominance_step: number;
-  dominance_share_cap: number;
-  /** Evidence haircut on the final implied value: strong (10+ comparables). */
-  confidence_strong: number;
-  /** Evidence haircut: fair (3-9 comparables). */
-  confidence_fair: number;
-  /** Evidence haircut: thin (<3 comparables, global median used). */
-  confidence_thin: number;
 }
 
 export const MODEL: ModelConstants = {
@@ -118,16 +86,9 @@ export const MODEL: ModelConstants = {
   multiple_cap: 0.8,
   chain_step: 0.02,
   chain_cap: 1.1,
-  momentum_weight: 0.3,
-  momentum_cap: 30,
-  dominance_step: 0.2,
-  dominance_share_cap: 0.5,
-  confidence_strong: 1.0,
-  confidence_fair: 0.9,
-  confidence_thin: 0.7,
 };
 
-export const MODEL_VERSION = 'radar-4';
+export const MODEL_VERSION = 'radar-2';
 export const LIVE_ROWS = 24;
 
 export interface FarmStep {
@@ -158,22 +119,8 @@ export interface BoardRow {
     growth_multiplier: number;
     maturity_multiplier: number;
     chain_multiplier: number;
-    momentum_multiplier: number;
-    dominance_multiplier: number;
-    /** Evidence haircut applied to the final implied value (1.00 / 0.90 / 0.70). */
-    confidence_multiplier: number;
     age_days: number | null;
   };
-  /** Growth of this protocol minus the median 7d growth of its category's rankable peers, in points. */
-  relative_growth: number;
-  /** Share of the category's rankable TVL, 0..1. */
-  category_share: number;
-  /** 'strong' = 10+ live comparables, 'fair' = 3-9, 'thin' = priced on the global median. */
-  confidence: 'strong' | 'fair' | 'thin';
-  /** Scannable flags: HOT, COOLING, THIN, 1-CHAIN, LONG WAIT, NEW. */
-  signals: string[];
-  /** One plain-language verdict built from this row's own factors. */
-  verdict: string;
   farm_steps: string[];
 }
 
@@ -193,17 +140,6 @@ export interface RadarRow {
   growth_multiplier: number;
   maturity_multiplier: number;
   chain_multiplier: number;
-  momentum_multiplier: number;
-  dominance_multiplier: number;
-  /** Evidence haircut applied to the final implied value (1.00 / 0.90 / 0.70). */
-  confidence_multiplier: number;
-  /** Growth of this protocol minus the median 7d growth of its category's rankable peers, in points. */
-  relative_growth: number;
-  /** Share of the category's rankable TVL, 0..1. */
-  category_share: number;
-  confidence: 'strong' | 'fair' | 'thin';
-  signals: string[];
-  verdict: string;
   farm_steps: string[];
   watchlist: boolean;
 }
@@ -225,14 +161,6 @@ export interface CategoryMultiple {
   median_ratio: number;
 }
 
-export interface CategoryStat {
-  category: string;
-  rows: number;
-  total_implied_usd: number;
-  total_tvl_usd: number;
-  median_multiple: number;
-}
-
 export interface RadarData {
   as_of: string;
   source: string;
@@ -244,9 +172,7 @@ export interface RadarData {
   board_size: number;
   early_size: number;
   live_size: number;
-  total_implied_usd: number;
   category_multiples: CategoryMultiple[];
-  category_stats: CategoryStat[];
   rows: RadarRow[];
   live: LiveRow[];
 }
@@ -345,9 +271,7 @@ export function impliedValue(
   asOf: string,
   multiple: number,
   model: ModelConstants,
-  peerMedianGrowth: number | null = null,
-  categoryShare: number = 0,
-): { implied: number; growthPct: number; growthMult: number; maturityMult: number; chainMult: number; momentumMult: number; dominanceMult: number; relativeGrowth: number; age: number | null } {
+): { implied: number; growthPct: number; growthMult: number; maturityMult: number; chainMult: number; age: number | null } {
   const age = ageDays(asOf, protocol.listed_at);
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
@@ -358,143 +282,8 @@ export function impliedValue(
     (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
   const extraChains = Math.min(Math.max(protocol.chains.length - 1, 0), 5);
   const chainMult = Math.min(model.chain_cap, 1 + extraChains * model.chain_step);
-  // Momentum: growth relative to the category's rankable peers. A protocol
-  // outgrowing its own category is nearer a launch than one riding the
-  // category's drift; a protocol lagging its peers is marked down. Clamped
-  // to +/-30 points so one wild week cannot dominate.
-  const relativeGrowth =
-    peerMedianGrowth === null
-      ? 0
-      : Math.min(model.momentum_cap, Math.max(-model.momentum_cap, rawGrowth - peerMedianGrowth));
-  const momentumMult = 1 + (relativeGrowth / 100) * model.momentum_weight;
-  // Dominance: share of the category's rankable TVL. The protocol that
-  // leads its category is the one a launch would price first; the boost
-  // caps at a 50% share so a one-protocol category cannot run away.
-  const dominanceMult = 1 + Math.min(Math.max(categoryShare, 0), model.dominance_share_cap) * model.dominance_step;
-  const implied = Math.max(
-    1,
-    Math.round(protocol.tvl_usd * multiple * growthMult * maturityMult * chainMult * momentumMult * dominanceMult),
-  );
-  return { implied, growthPct, growthMult, maturityMult, chainMult, momentumMult, dominanceMult, relativeGrowth, age };
-}
-
-/**
- * Per category, the median 7d growth of its rankable protocols (nulls
- * skipped; categories with fewer than 3 growth readings get no median).
- * Computed over the rankable set only, so live-token protocols never set
- * the peer bar for pre-token ones.
- */
-export function categoryPeerMedians(rankable: SnapshotProtocol[]): Map<string, number> {
-  const byCat = new Map<string, number[]>();
-  for (const p of rankable) {
-    if (p.category === null || p.change_7d === null || !Number.isFinite(p.change_7d)) continue;
-    const list = byCat.get(p.category) ?? [];
-    list.push(p.change_7d);
-    byCat.set(p.category, list);
-  }
-  const out = new Map<string, number>();
-  for (const [cat, list] of byCat) {
-    if (list.length >= 3) out.set(cat, median(list));
-  }
-  return out;
-}
-
-/** Per category, the total TVL of its rankable protocols. */
-export function categoryTotals(rankable: SnapshotProtocol[]): Map<string, number> {
-  const out = new Map<string, number>();
-  for (const p of rankable) {
-    out.set(p.category ?? 'Other', (out.get(p.category ?? 'Other') ?? 0) + p.tvl_usd);
-  }
-  return out;
-}
-
-export function confidenceFor(comparables: number): 'strong' | 'fair' | 'thin' {
-  if (comparables >= 10) return 'strong';
-  if (comparables >= 3) return 'fair';
-  return 'thin';
-}
-
-/** Evidence haircut on the final implied value, from the confidence grade. */
-export function confidenceMultiplier(
-  confidence: 'strong' | 'fair' | 'thin',
-  model: ModelConstants = MODEL,
-): number {
-  if (confidence === 'strong') return model.confidence_strong;
-  if (confidence === 'fair') return model.confidence_fair;
-  return model.confidence_thin;
-}
-
-/** Scannable flags for a row, from its own record only. */
-export function signalsFor(
-  p: SnapshotProtocol,
-  age: number | null,
-  comparables: number,
-): string[] {
-  const signals: string[] = [];
-  const growth = finite(p.change_7d, 0);
-  if (p.change_7d !== null && p.change_7d >= 10) signals.push('HOT');
-  if (p.change_7d !== null && p.change_7d <= -10) signals.push('COOLING');
-  if (comparables < 3) signals.push('THIN');
-  if (p.chains.length <= 1) signals.push('1-CHAIN');
-  if (age !== null && age > 1095) signals.push('LONG WAIT');
-  if (age !== null && age < 180) signals.push('NEW');
-  return signals;
-}
-
-/** One plain-language verdict for a row, built from its own factors only. */
-export function verdictFor(args: {
-  rank: number;
-  name: string;
-  category: string | null;
-  tvl_usd: number;
-  change_7d: number | null;
-  age_days: number | null;
-  chains: string[];
-  category_multiple: number;
-  comparables: number;
-  relative_growth: number;
-  category_share: number;
-  confidence: 'strong' | 'fair' | 'thin';
-}): string {
-  const a = args;
-  // Each strength is a participle or adjective phrase, because the
-  // sentence is "Ranks #N because it is <strength>, and <strength>."
-  // Radar-3 shipped finite verbs here ("because it is leads ...");
-  // radar-4 keeps the grammar straight.
-  const strengths: string[] = [];
-  if (a.change_7d !== null && a.change_7d >= 10) {
-    strengths.push(`growing fast at +${a.change_7d.toFixed(1)}% in 7 days`);
-  }
-  if (a.relative_growth >= 10) {
-    strengths.push(`outgrowing its category peers by ${a.relative_growth.toFixed(1)} points`);
-  }
-  if (a.category_share >= 0.3) {
-    strengths.push(`leading its category with ${(a.category_share * 100).toFixed(0)}% of the category's pre-token TVL`);
-  }
-  if (a.age_days !== null && a.age_days >= 730) {
-    strengths.push(`running ${(a.age_days / 365).toFixed(1)} years with no token on record`);
-  }
-  if (a.chains.length >= 8) {
-    strengths.push(`live on ${a.chains.length} chains`);
-  }
-  if (strengths.length === 0) {
-    strengths.push(`carrying $${Math.round(a.tvl_usd / 1e6)}M of TVL priced at a ${a.category_multiple.toFixed(2)}x category multiple`);
-  }
-  const risks: string[] = [];
-  if (a.confidence === 'thin') {
-    risks.push(`priced on the global median — only ${a.comparables} live comparables in its category, so its value is discounted 30%`);
-  }
-  if (a.change_7d !== null && a.change_7d <= -10) {
-    risks.push(`TVL fell ${a.change_7d.toFixed(1)}% in 7 days`);
-  }
-  if (a.chains.length <= 1) {
-    risks.push('live on one chain only');
-  }
-  if (a.age_days !== null && a.age_days < 180) {
-    risks.push(`listed only ${a.age_days} days ago`);
-  }
-  const watch = risks.length > 0 ? risks.join('; ') : 'nothing in the record argues against it';
-  return `Ranks #${a.rank} because it is ${strengths.join(', and ')}. Watch: ${watch}.`;
+  const implied = Math.max(1, Math.round(protocol.tvl_usd * multiple * growthMult * maturityMult * chainMult));
+  return { implied, growthPct, growthMult, maturityMult, chainMult, age };
 }
 
 function bySlug(protocols: SnapshotProtocol[]): Map<string, SnapshotProtocol> {
@@ -519,84 +308,40 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     .sort((a, b) => b.tvl_usd - a.tvl_usd || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
   for (const p of early) chosen.set(p.slug, p);
 
-  const rankable = [...chosen.values()];
-  // Radar-3 factors, both computed over the rankable set only: the median
-  // 7d growth of each category's rankable peers (momentum) and each
-  // category's total rankable TVL (dominance).
-  const peerMedians = categoryPeerMedians(rankable);
-  const totals = categoryTotals(rankable);
-  const scored = rankable.map((p) => {
+  const scored = [...chosen.values()].map((p) => {
     const entry = p.category !== null ? lookup.get(p.category) : undefined;
     const multiple = entry?.multiple ?? global;
     const comparables = entry?.comparables ?? 0;
-    const peerMedian = p.category !== null ? peerMedians.get(p.category) ?? null : null;
-    const catTotal = totals.get(p.category ?? 'Other') ?? p.tvl_usd;
-    const share = catTotal > 0 ? p.tvl_usd / catTotal : 0;
-    const v = impliedValue(p, snapshot.as_of, multiple, model, peerMedian, share);
-    // Radar-4: the evidence haircut. A row priced on the global median
-    // with no live comparables behind its multiple is discounted 30%
-    // before ranking; the board ranks evidence-weighted value, not a
-    // raw guess presented at full price.
-    const confidence = confidenceFor(comparables);
-    const confMult = confidenceMultiplier(confidence, model);
-    const adjusted = Math.max(1, Math.round(v.implied * confMult));
-    return { p, multiple, comparables, share, confidence, confMult, adjusted, ...v };
+    const v = impliedValue(p, snapshot.as_of, multiple, model);
+    return { p, multiple, comparables, ...v };
   });
-  scored.sort((a, b) => b.adjusted - a.adjusted || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
-  return scored.map((s, i) => {
-    const signals = signalsFor(s.p, s.age, s.comparables);
-    const verdict = verdictFor({
-      rank: i + 1,
-      name: s.p.name,
-      category: s.p.category,
-      tvl_usd: s.p.tvl_usd,
-      change_7d: s.p.change_7d,
-      age_days: s.age,
-      chains: s.p.chains,
+  scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
+  return scored.map((s, i) => ({
+    rank: i + 1,
+    slug: s.p.slug,
+    name: s.p.name,
+    category: s.p.category,
+    chains: s.p.chains,
+    tvl_usd: s.p.tvl_usd,
+    change_7d: s.p.change_7d,
+    mcap_usd: s.p.mcap_usd,
+    listed_at: s.p.listed_at,
+    gecko_id: s.p.gecko_id,
+    symbol: s.p.symbol,
+    token_status: 'pre-token',
+    age_days: s.age,
+    implied_value_usd: s.implied,
+    model: {
       category_multiple: s.multiple,
       comparables: s.comparables,
-      relative_growth: s.relativeGrowth,
-      category_share: s.share,
-      confidence: s.confidence,
-    });
-    return {
-      rank: i + 1,
-      slug: s.p.slug,
-      name: s.p.name,
-      category: s.p.category,
-      chains: s.p.chains,
-      tvl_usd: s.p.tvl_usd,
-      change_7d: s.p.change_7d,
-      mcap_usd: s.p.mcap_usd,
-      listed_at: s.p.listed_at,
-      gecko_id: s.p.gecko_id,
-      symbol: s.p.symbol,
-      token_status: 'pre-token' as const,
+      growth_pct: s.growthPct,
+      growth_multiplier: round4(s.growthMult),
+      maturity_multiplier: round4(s.maturityMult),
+      chain_multiplier: round4(s.chainMult),
       age_days: s.age,
-      implied_value_usd: s.adjusted,
-      model: {
-        category_multiple: s.multiple,
-        comparables: s.comparables,
-        growth_pct: s.growthPct,
-        // Full precision here, not round4: the dashboard recomputes the
-        // row from these exact numbers, and rounded factors would make
-        // its check disagree with board.json by a few dollars.
-        growth_multiplier: s.growthMult,
-        maturity_multiplier: s.maturityMult,
-        chain_multiplier: s.chainMult,
-        momentum_multiplier: s.momentumMult,
-        dominance_multiplier: s.dominanceMult,
-        confidence_multiplier: s.confMult,
-        age_days: s.age,
-      },
-      confidence: s.confidence,
-      signals,
-      relative_growth: round4(s.relativeGrowth),
-      category_share: round4(s.share),
-      verdict,
-      farm_steps: farmSteps(s.p, s.age).map(stepText),
-    };
-  });
+    },
+    farm_steps: farmSteps(s.p, s.age).map(stepText),
+  }));
 }
 
 export function stepText(step: FarmStep): string {
@@ -654,31 +399,12 @@ function actionFor(p: SnapshotProtocol, capital: number, chain: string): string 
  * Derived from the protocol's own record (category, chains, TVL, age),
  * never from a hand-written list of names.
  */
-/** The weekly qualifying action, specific to the protocol's category — a
- * farm plan that says "do something" every week is a template, not a plan. */
-function weeklyActionFor(p: SnapshotProtocol): string {
-  const c = (p.category ?? '').toLowerCase();
-  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) return 'a supply, a borrow or a repayment';
-  if (c.includes('dex') || c.includes('leveraged farm')) return 'a swap or a liquidity top-up';
-  if (c.includes('yield') || c.includes('curator') || c.includes('allocator') || c.includes('risk')) return 'a deposit or a vault rebalance';
-  if (c.includes('rwa')) return 'a mint or a hold-check on the yield-bearing asset';
-  if (c.includes('prediction')) return 'one small researched market position';
-  if (c.includes('perpetual') || c.includes('derivative')) return 'one small hedged trade';
-  if (c.includes('bridge')) return 'a bridge transfer you actually use';
-  if (c.includes('staking') || c.includes('restak')) return 'a stake top-up or a rewards check';
-  if (c.includes('stable')) return 'a mint or a hold of the stable asset';
-  if (c.includes('insurance')) return 'a cover check or a policy renewal';
-  if (c.includes('payment')) return 'one real payment through the protocol';
-  return 'a deposit, a borrow, a swap or a vote';
-}
-
 export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const chain = chainOf(p);
   const capital = capitalFor(p);
   const hold = holdDaysFor(age);
   const gas = gasGuide(chain);
   const action = actionFor(p, capital, chain);
-  const weekly = weeklyActionFor(p);
   return [
     {
       text: `Use a fresh wallet that holds only the funds you plan to farm, keep its seed phrase offline, and fund it with $${capital} of USDC plus gas on ${chain}.`,
@@ -687,7 +413,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
     },
     { text: action, cost: `$${capital} of capital and ${gas}`, time: '15 minutes to set up' },
     {
-      text: `Do one qualifying action each week on ${chain} — ${weekly} — and never leave the wallet idle for a whole month.`,
+      text: `Do one qualifying action each week on ${chain}, such as a deposit, a borrow, a swap or a vote, and never leave the wallet idle for a whole month.`,
       cost: 'about $2 of gas a week',
       time: '10 minutes a week',
     },
@@ -742,14 +468,6 @@ export function radarRow(row: BoardRow): RadarRow {
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
     chain_multiplier: row.model.chain_multiplier,
-    momentum_multiplier: row.model.momentum_multiplier,
-    dominance_multiplier: row.model.dominance_multiplier,
-    confidence_multiplier: row.model.confidence_multiplier,
-    relative_growth: row.relative_growth,
-    category_share: row.category_share,
-    confidence: row.confidence,
-    signals: row.signals,
-    verdict: row.verdict,
     farm_steps: row.farm_steps,
     watchlist: false,
   };
@@ -760,26 +478,6 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
   const live = liveRows(snapshot);
   const { global, table } = calibrateMultiples(snapshot, model);
   const early = board.filter((r) => !snapshot.watchlist.includes(r.slug)).length;
-  // Category stats: implied value by category, strongest first.
-  const byCat = new Map<string, { rows: number; total_implied: number; total_tvl: number; multiples: number[] }>();
-  for (const r of board) {
-    const key = r.category ?? 'Other';
-    const s = byCat.get(key) ?? { rows: 0, total_implied: 0, total_tvl: 0, multiples: [] };
-    s.rows += 1;
-    s.total_implied += r.implied_value_usd;
-    s.total_tvl += r.tvl_usd;
-    s.multiples.push(r.model.category_multiple);
-    byCat.set(key, s);
-  }
-  const category_stats: CategoryStat[] = [...byCat.entries()]
-    .map(([category, s]) => ({
-      category,
-      rows: s.rows,
-      total_implied_usd: s.total_implied,
-      total_tvl_usd: s.total_tvl,
-      median_multiple: median(s.multiples),
-    }))
-    .sort((a, b) => b.total_implied_usd - a.total_implied_usd);
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
@@ -791,9 +489,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     board_size: board.length,
     early_size: early,
     live_size: live.length,
-    total_implied_usd: board.reduce((a, r) => a + r.implied_value_usd, 0),
     category_multiples: table,
-    category_stats,
     rows: board.map((r) => ({ ...radarRow(r), watchlist: snapshot.watchlist.includes(r.slug) })),
     live,
   };
